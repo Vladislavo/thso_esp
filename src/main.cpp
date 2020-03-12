@@ -56,8 +56,8 @@ void setup() {
 float t, h;
 
 void loop() {
-    read_hih4040(&sensor_data);
-    Serial.printf("h = %.2f\r\n", sensor_data.hih4030);
+    read_tmp36(&sensor_data);
+    Serial.printf("t0 = %.2f, t1 = %.2f, t2 = %.2f\r\n", sensor_data.tmp36_0, sensor_data.tmp36_1, sensor_data.tmp36_2);
     delay(1000);
 }
 
@@ -96,7 +96,7 @@ void read_hih4040(sensor_data_t *sensor_data) {
 }
 
 void read_tmp36(sensor_data_t *sensor_data) {
-    sensor_data->tmp36_0 = ads.readADC_SingleEnded(0);
-    sensor_data->tmp36_0 = ads.readADC_SingleEnded(1);
-    sensor_data->tmp36_0 = ads.readADC_SingleEnded(2);
+    sensor_data->tmp36_0 = (((ads.readADC_SingleEnded(0)*0.1875)/1000) - 0.5)*100;
+    sensor_data->tmp36_1 = (((ads.readADC_SingleEnded(1)*0.1875)/1000) - 0.5)*100;
+    sensor_data->tmp36_2 = (((ads.readADC_SingleEnded(2)*0.1875)/1000) - 0.5)*100;
 }
