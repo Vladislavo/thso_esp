@@ -4,15 +4,27 @@
 #include <Wire.h>
 #include <SHTSensor.h>
 #include <HIHReader.h>
+#include <bus_protocol/bus_protocol.h>
 
 #include <Adafruit_ADS1015.h>
-#include <SparkFunTMP102.h>
 
 #define BAUDRATE                            115200
 
 #define DHT22_READ_RETRIES                  100
 
 #define DHT22_PIN                           13
+#define WIS_SYNC_PIN                        25
+#define MKR_SYNC_PIN                        19
+
+#define BUS_PROTOCOL_MAX_PACKET_SIZE        128
+#define BUS_PROTOCOL_MAX_WAITING_TIME       300
+
+#define WIS_TX_PIN                          17
+#define WIS_RX_PIN                          16
+#define MKR_TX_PIN                          26
+#define MKR_RX_PIN                          27
+
+HardwareSerial bus_wis(2);
 
 typedef struct {
     float dht22_t   = .0;
@@ -25,7 +37,6 @@ typedef struct {
     float tmp36_1   = .0;
     float tmp36_2   = .0;
     float hih4030   = .0;
-    float tmp102    = .0; // remove
     float hh10d     = .0;
 } esp_sensor_data_t;
 
@@ -60,7 +71,6 @@ DHT dht(DHT22_PIN, DHT22);
 SHTSensor sht85;
 HIHReader hih8121(0x27);
 Adafruit_ADS1115 ads;
-TMP102 tmp102(0x48);
 
 void setup_hh10d();
 
@@ -72,11 +82,17 @@ void read_tmp36(esp_sensor_data_t *sensor_data);
 void read_tmp102(esp_sensor_data_t *sensor_data);
 void read_hh10d(esp_sensor_data_t *sensor_data);
 
-esp_sensor_data_t sensor_data;
+void read_sensors(esp_sensor_data_t *sensor_data);
+
+sensor_data_t sensor_data;
+uint8_t buffer[BUS_PROTOCOL_MAX_PACKET_SIZE];
+uint8_t buffer_length = 0;
 
 void setup() {
     Serial.begin(BAUDRATE);
     Wire.begin();
+
+    bus_wis.begin(BAUDRATE, SERIAL_8N1, WIS_RX_PIN, WIS_TX_PIN);
 
     dht.begin();
     sht85.init();
@@ -84,10 +100,6 @@ void setup() {
 
     ads.begin();
     ads.setGain(GAIN_TWOTHIRDS); // +/-6.144V range
-
-    tmp102.begin();
-    tmp102.setConversionRate(2); // 4Hz
-    tmp102.setExtendedMode(0);  // 12 bits
 
     setup_hh10d();
 }
@@ -98,9 +110,41 @@ int sens;
 int ofs;
 
 void loop() {
-    read_hh10d(&sensor_data);
-    //Serial.printf("t = %.2f\r\n", sensor_data.tmp102);
-    delay(1000);
+    // give signals to mkr and wis to collect the data
+    digitalWrite(WIS_SYNC_PIN, HIGH);
+    delay(10);
+    digitalWrite(WIS_SYNC_PIN, LOW);
+    
+    digitalWrite(MKR_SYNC_PIN, HIGH);
+    delay(10);
+    digitalWrite(MKR_SYNC_PIN, LOW);
+    
+    read_sensors(&sensor_data.esp_sensor_data);
+
+    while (!digitalRead(WIS_SYNC_PIN)) { }
+    
+    bus_protocol_data_request_encode(BUS_PROTOCOL_BOARD_ID_ESP, buffer, &buffer_length);
+
+    bus_wis.write(buffer, buffer_length);
+
+    if (bus_protocol_serial_receive(&bus_wis, buffer, &buffer_length, BUS_PROTOCOL_MAX_WAITING_TIME)) {
+            switch (bus_protocol_packet_decode(buffer, buffer_length, buffer, &buffer_length)) {
+                case BUS_PROTOCOL_PACKET_TYPE_DATA_SEND :
+                    digitalWrite(LED_SERIAL_RECEIVE, HIGH);
+                    ESP_LOGD(TAG, "WIS DATA SEND");
+                    ESP_LOGD(TAG, "%d bytes", buffer_length);
+                    
+                    bus_protocol_data_send_decode(&sensors_data, buffer, buffer_length);
+
+                    bus_protocol_packet_encode(BUS_PROTOCOL_PACKET_TYPE_ACK, buffer, 0, buffer, &buffer_length);
+                    bus_wis.write(buffer, buffer_length);
+
+                    digitalWrite(LED_SERIAL_RECEIVE, LOW);
+                default:
+                    break;
+            }
+        }
+
 }
 
 // function to intitialize HH10D
@@ -168,11 +212,6 @@ void read_tmp36(esp_sensor_data_t *sensor_data) {
     sensor_data->tmp36_2 = (((ads.readADC_SingleEnded(2)*0.1875)/1000) - 0.5)*100;
 }
 
-void read_tmp102(esp_sensor_data_t *sensor_data) {
-    tmp102.wakeup();
-    sensor_data->tmp102 = tmp102.readTempC();
-}
-
 void read_hh10d(esp_sensor_data_t *sensor_data) {
     const int HH10D_FOUT_PIN    = 23;
     float freq = .0;
@@ -182,4 +221,28 @@ void read_hh10d(esp_sensor_data_t *sensor_data) {
     freq /= 256;
 
     sensor_data->hh10d = float((ofs - freq)* sens)/float(4096);
+}
+
+void read_sensors(esp_sensor_data_t *sensor_data) {
+    read_dht22(sensor_data);
+    read_sht85(sensor_data);
+    read_hih8121(sensor_data);
+    read_hih4040(sensor_data);
+    read_tmp36(sensor_data);
+    read_tmp102(sensor_data);
+    read_hh10d(sensor_data);
+}
+
+uint8_t bus_protocol_serial_receive(Stream *serial, uint8_t *data, uint8_t *data_length, const uint32_t timeout) {
+    *data_length = 0;
+    uint32_t start_millis = millis();
+    while(start_millis + timeout > millis() && *data_length < BUS_PROTOCOL_MAX_PACKET_SIZE) {
+        if (serial->available()) {
+            data[(*data_length)++] = serial->read();
+            // update wating time
+            start_millis = millis();
+        }
+    }
+
+    return *data_length;
 }
