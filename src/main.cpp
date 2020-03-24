@@ -24,7 +24,10 @@
 #define MKR_TX_PIN                          26
 #define MKR_RX_PIN                          27
 
+#define LED_SERIAL                          2
+
 HardwareSerial bus_wis(2);
+HardwareSerial bus_mkr(1);
 
 typedef struct {
     float dht22_t   = .0;
@@ -79,20 +82,36 @@ void read_sht85(esp_sensor_data_t *sensor_data);
 void read_hih8121(esp_sensor_data_t *sensor_data);
 void read_hih4040(esp_sensor_data_t *sensor_data);
 void read_tmp36(esp_sensor_data_t *sensor_data);
-void read_tmp102(esp_sensor_data_t *sensor_data);
 void read_hh10d(esp_sensor_data_t *sensor_data);
 
 void read_sensors(esp_sensor_data_t *sensor_data);
 
+uint8_t bus_protocol_serial_receive(
+    Stream *serial, 
+    uint8_t *data, 
+    uint8_t *data_length, 
+    const uint32_t timeout);
+uint8_t bus_protocol_data_send_decode(
+    sensor_data_t *sensor_data,
+    const uint8_t *payload,
+    const uint8_t payload_length);
+
+void source_modulation(Stream *stream, sensor_data_t *sensor_data);
+void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep);
+
 sensor_data_t sensor_data;
+
 uint8_t buffer[BUS_PROTOCOL_MAX_PACKET_SIZE];
 uint8_t buffer_length = 0;
+uint8_t payload[BUS_PROTOCOL_MAX_PACKET_SIZE];
+uint8_t payload_length = 0;
 
 void setup() {
     Serial.begin(BAUDRATE);
     Wire.begin();
 
     bus_wis.begin(BAUDRATE, SERIAL_8N1, WIS_RX_PIN, WIS_TX_PIN);
+    bus_mkr.begin(BAUDRATE, SERIAL_8N1, MKR_RX_PIN, MKR_TX_PIN);
 
     dht.begin();
     sht85.init();
@@ -102,6 +121,9 @@ void setup() {
     ads.setGain(GAIN_TWOTHIRDS); // +/-6.144V range
 
     setup_hh10d();
+
+    pinMode(WIS_SYNC_PIN, OUTPUT);
+    pinMode(MKR_SYNC_PIN, OUTPUT);
 }
 
 float t, h;
@@ -110,41 +132,48 @@ int sens;
 int ofs;
 
 void loop() {
-    // give signals to mkr and wis to collect the data
-    digitalWrite(WIS_SYNC_PIN, HIGH);
-    delay(10);
-    digitalWrite(WIS_SYNC_PIN, LOW);
-    
-    digitalWrite(MKR_SYNC_PIN, HIGH);
-    delay(10);
-    digitalWrite(MKR_SYNC_PIN, LOW);
-    
     read_sensors(&sensor_data.esp_sensor_data);
+    source_modulation(&bus_wis, &sensor_data);
+    source_modulation(&bus_mkr, &sensor_data);
 
-    while (!digitalRead(WIS_SYNC_PIN)) { }
-    
-    bus_protocol_data_request_encode(BUS_PROTOCOL_BOARD_ID_ESP, buffer, &buffer_length);
+    ESP_LOGD(TAG,   "WIS data: \r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f\r\n"
+                    "\t%0.2f",
+                    sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
+                    sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
+                    sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
+                    sensor_data.wis_sensor_data.hh10d,
+                    sensor_data.wis_sensor_data.tmp102);
 
-    bus_wis.write(buffer, buffer_length);
+    ESP_LOGD(TAG,   "MKR data: \r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f\r\n",
+                    sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
+                    sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
+                    sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
+                    sensor_data.mkr_sensor_data.hh10d);
 
-    if (bus_protocol_serial_receive(&bus_wis, buffer, &buffer_length, BUS_PROTOCOL_MAX_WAITING_TIME)) {
-            switch (bus_protocol_packet_decode(buffer, buffer_length, buffer, &buffer_length)) {
-                case BUS_PROTOCOL_PACKET_TYPE_DATA_SEND :
-                    digitalWrite(LED_SERIAL_RECEIVE, HIGH);
-                    ESP_LOGD(TAG, "WIS DATA SEND");
-                    ESP_LOGD(TAG, "%d bytes", buffer_length);
-                    
-                    bus_protocol_data_send_decode(&sensors_data, buffer, buffer_length);
+    ESP_LOGD(TAG,   "ESP data: \r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f\r\n"
+                    "\t%0.2f\r\n"
+                    "\t%0.2f, %0.2f, %0.2f\r\n",
+                    sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
+                    sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
+                    sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
+                    sensor_data.esp_sensor_data.hh10d,
+                    sensor_data.esp_sensor_data.hih4030,
+                    sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
 
-                    bus_protocol_packet_encode(BUS_PROTOCOL_PACKET_TYPE_ACK, buffer, 0, buffer, &buffer_length);
-                    bus_wis.write(buffer, buffer_length);
 
-                    digitalWrite(LED_SERIAL_RECEIVE, LOW);
-                default:
-                    break;
-            }
-        }
-
+    delay(5000);
 }
 
 // function to intitialize HH10D
@@ -229,7 +258,6 @@ void read_sensors(esp_sensor_data_t *sensor_data) {
     read_hih8121(sensor_data);
     read_hih4040(sensor_data);
     read_tmp36(sensor_data);
-    read_tmp102(sensor_data);
     read_hh10d(sensor_data);
 }
 
@@ -245,4 +273,108 @@ uint8_t bus_protocol_serial_receive(Stream *serial, uint8_t *data, uint8_t *data
     }
 
     return *data_length;
+}
+
+uint8_t bus_protocol_data_send_decode(
+    sensor_data_t *sensor_data,
+    const uint8_t *payload,
+    const uint8_t payload_length)
+{
+    uint8_t p_len = 0;
+    board_id_t board_id = BUS_PROTOCOL_BOARD_ID_UNKNOWN;
+
+    board_id = (board_id_t) payload[0];
+    p_len++;
+
+    switch (board_id) {
+    case BUS_PROTOCOL_BOARD_ID_WIS:
+        memcpy(&sensor_data->wis_sensor_data.dht22_t, &payload[p_len], sizeof(sensor_data->wis_sensor_data.dht22_t));
+        p_len += sizeof(sensor_data->wis_sensor_data.dht22_t);
+
+        memcpy(&sensor_data->wis_sensor_data.dht22_h, &payload[p_len], sizeof(sensor_data->wis_sensor_data.dht22_h));
+        p_len += sizeof(sensor_data->wis_sensor_data.dht22_h);
+
+        memcpy(&sensor_data->wis_sensor_data.sht85_t, &payload[p_len], sizeof(sensor_data->wis_sensor_data.sht85_t));
+        p_len += sizeof(sensor_data->wis_sensor_data.sht85_t);
+
+        memcpy(&sensor_data->wis_sensor_data.sht85_h, &payload[p_len], sizeof(sensor_data->wis_sensor_data.sht85_h));
+        p_len += sizeof(sensor_data->wis_sensor_data.sht85_h);
+
+        memcpy(&sensor_data->wis_sensor_data.hih8121_t, &payload[p_len], sizeof(sensor_data->wis_sensor_data.hih8121_t));
+        p_len += sizeof(sensor_data->wis_sensor_data.hih8121_t);
+
+        memcpy(&sensor_data->wis_sensor_data.hih8121_h, &payload[p_len], sizeof(sensor_data->wis_sensor_data.hih8121_h));
+        p_len += sizeof(sensor_data->wis_sensor_data.hih8121_h);
+        
+        memcpy(&sensor_data->wis_sensor_data.hh10d, &payload[p_len], sizeof(sensor_data->wis_sensor_data.hh10d));
+        p_len += sizeof(sensor_data->wis_sensor_data.hh10d);
+
+        memcpy(&sensor_data->wis_sensor_data.tmp102, &payload[p_len], sizeof(sensor_data->wis_sensor_data.tmp102));
+        p_len += sizeof(sensor_data->wis_sensor_data.tmp102);
+        break;
+
+    case BUS_PROTOCOL_BOARD_ID_MKR:
+        memcpy(&sensor_data->mkr_sensor_data.dht22_t, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.dht22_t));
+        p_len += sizeof(sensor_data->mkr_sensor_data.dht22_t);
+
+        memcpy(&sensor_data->mkr_sensor_data.dht22_h, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.dht22_h));
+        p_len += sizeof(sensor_data->mkr_sensor_data.dht22_h);
+
+        memcpy(&sensor_data->mkr_sensor_data.sht85_t, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.sht85_t));
+        p_len += sizeof(sensor_data->mkr_sensor_data.sht85_t);
+
+        memcpy(&sensor_data->mkr_sensor_data.sht85_h, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.sht85_h));
+        p_len += sizeof(sensor_data->mkr_sensor_data.sht85_h);
+
+        memcpy(&sensor_data->mkr_sensor_data.hih8121_t, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.hih8121_t));
+        p_len += sizeof(sensor_data->mkr_sensor_data.hih8121_t);
+
+        memcpy(&sensor_data->mkr_sensor_data.hih8121_h, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.hih8121_h));
+        p_len += sizeof(sensor_data->mkr_sensor_data.hih8121_h);
+        
+        memcpy(&sensor_data->mkr_sensor_data.hh10d, &payload[p_len], sizeof(sensor_data->mkr_sensor_data.hh10d));
+        p_len += sizeof(sensor_data->mkr_sensor_data.hh10d);
+        break;
+    
+    default:
+        break;
+    }
+
+    return p_len == payload_length;
+}
+
+void source_modulation(Stream *stream, sensor_data_t *sensor_data) {
+    bus_protocol_data_request_encode(BUS_PROTOCOL_BOARD_ID_ESP, buffer, &buffer_length);
+    stream->write(buffer, buffer_length);
+
+    while(!bus_protocol_serial_receive(stream, buffer, &buffer_length, BUS_PROTOCOL_MAX_WAITING_TIME)) {
+        digitalWrite(LED_SERIAL, HIGH);
+        stream->write(buffer, buffer_length);
+        digitalWrite(LED_SERIAL, LOW);
+    }
+
+    // Serial.printf("Received bus (%d bytes): ", buffer_length);
+    // print_array_hex(buffer, buffer_length, " : ");
+
+    switch (bus_protocol_packet_decode(buffer, buffer_length, payload, &payload_length)) {
+        case BUS_PROTOCOL_PACKET_TYPE_DATA_SEND :
+            digitalWrite(LED_SERIAL, HIGH);
+            // ESP_LOGD(TAG, "DATA SEND");
+            // ESP_LOGD(TAG, "%d bytes", buffer_length);
+            
+            bus_protocol_data_send_decode(  sensor_data, 
+                                            payload, 
+                                            payload_length);
+
+            digitalWrite(LED_SERIAL, LOW);
+        default:
+            break;
+    }
+}
+
+void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
+    for(uint8_t i = 0; i < array_length-1; i++) {
+        Serial.printf("%02X%s", array[i], sep);
+    }
+    Serial.printf("%02X\r\n", array[array_length-1]);
 }
