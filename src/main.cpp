@@ -1,10 +1,13 @@
 #include <Arduino.h>
+#include <WiFi.h>
 
 #include <DHT.h>
 #include <Wire.h>
 #include <SHTSensor.h>
 #include <HIHReader.h>
+
 #include <bus_protocol/bus_protocol.h>
+#include <gateway_protocol.h>
 
 #include <Adafruit_ADS1015.h>
 
@@ -25,6 +28,12 @@
 #define MKR_RX_PIN                          27
 
 #define LED_SERIAL                          2
+
+#define WIFI_SSID                           "ISRcomunicaciones34"
+#define WIFI_PASSWORD                       "16818019"
+
+#define GATEWAY_IP_ADDRESS                  IPAddress(192,168,0,102)
+#define GATWAY_PORT                         9043
 
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
@@ -124,6 +133,16 @@ void setup() {
 
     pinMode(WIS_SYNC_PIN, OUTPUT);
     pinMode(MKR_SYNC_PIN, OUTPUT);
+
+    WiFi.disconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("WiFi connected");
+    Serial.println("IP address set: ");
+    Serial.println(WiFi.localIP()); //print LAN IP
 }
 
 float t, h;
