@@ -7,7 +7,7 @@
 #include <HIHReader.h>
 
 #include <bus_protocol/bus_protocol.h>
-#include <gateway_protocol.h>
+#include <gateway_protocol/gateway_protocol.h>
 
 #include <Adafruit_ADS1015.h>
 
@@ -33,7 +33,7 @@
 #define WIFI_PASSWORD                       "16818019"
 
 #define GATEWAY_IP_ADDRESS                  IPAddress(192,168,0,102)
-#define GATWAY_PORT                         9043
+#define GATEWAY_PORT                        9043
 
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
@@ -84,6 +84,8 @@ SHTSensor sht85;
 HIHReader hih8121(0x27);
 Adafruit_ADS1115 ads;
 
+WiFiUDP clientUDP;
+
 void setup_hh10d();
 
 void read_dht22(esp_sensor_data_t *sensor_data);
@@ -104,6 +106,8 @@ uint8_t bus_protocol_data_send_decode(
     sensor_data_t *sensor_data,
     const uint8_t *payload,
     const uint8_t payload_length);
+
+uint32_t gateway_protocol_get_time();
 
 void source_modulation(Stream *stream, sensor_data_t *sensor_data);
 void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep);
@@ -143,6 +147,8 @@ void setup() {
     Serial.println("WiFi connected");
     Serial.println("IP address set: ");
     Serial.println(WiFi.localIP()); //print LAN IP
+
+    clientUDP.begin(GATEWAY_PORT);
 }
 
 float t, h;
@@ -151,45 +157,47 @@ int sens;
 int ofs;
 
 void loop() {
-    read_sensors(&sensor_data.esp_sensor_data);
-    source_modulation(&bus_wis, &sensor_data);
-    source_modulation(&bus_mkr, &sensor_data);
+    ESP_LOGD(TAG, "Time : %d\r\n", gateway_protocol_get_time());
 
-    ESP_LOGD(TAG,   "WIS data: \r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f\r\n"
-                    "\t%0.2f",
-                    sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
-                    sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
-                    sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
-                    sensor_data.wis_sensor_data.hh10d,
-                    sensor_data.wis_sensor_data.tmp102);
+    // read_sensors(&sensor_data.esp_sensor_data);
+    // source_modulation(&bus_wis, &sensor_data);
+    // source_modulation(&bus_mkr, &sensor_data);
 
-    ESP_LOGD(TAG,   "MKR data: \r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f\r\n",
-                    sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
-                    sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
-                    sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
-                    sensor_data.mkr_sensor_data.hh10d);
+    // ESP_LOGD(TAG,   "WIS data: \r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f\r\n"
+    //                 "\t%0.2f",
+    //                 sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
+    //                 sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
+    //                 sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
+    //                 sensor_data.wis_sensor_data.hh10d,
+    //                 sensor_data.wis_sensor_data.tmp102);
 
-    ESP_LOGD(TAG,   "ESP data: \r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f\r\n"
-                    "\t%0.2f\r\n"
-                    "\t%0.2f, %0.2f, %0.2f\r\n",
-                    sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
-                    sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
-                    sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
-                    sensor_data.esp_sensor_data.hh10d,
-                    sensor_data.esp_sensor_data.hih4030,
-                    sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
+    // ESP_LOGD(TAG,   "MKR data: \r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f\r\n",
+    //                 sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
+    //                 sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
+    //                 sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
+    //                 sensor_data.mkr_sensor_data.hh10d);
+
+    // ESP_LOGD(TAG,   "ESP data: \r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f, %0.2f\r\n"
+    //                 "\t%0.2f\r\n"
+    //                 "\t%0.2f\r\n"
+    //                 "\t%0.2f, %0.2f, %0.2f\r\n",
+    //                 sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
+    //                 sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
+    //                 sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
+    //                 sensor_data.esp_sensor_data.hh10d,
+    //                 sensor_data.esp_sensor_data.hih4030,
+    //                 sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
 
 
     delay(5000);
@@ -362,6 +370,44 @@ uint8_t bus_protocol_data_send_decode(
     return p_len == payload_length;
 }
 
+uint32_t gateway_protocol_get_time() {
+    uint32_t utc = 0;
+    uint8_t buf[32];
+    uint8_t buf_len = 0;
+
+    gateway_protocol_packet_encode(
+                                (uint8_t) BUS_PROTOCOL_BOARD_ID_ESP, 
+                                GATEWAY_PROTOCOL_PACKET_TYPE_TIME_REQ,
+                                0, buf,
+                                &buf_len, buf);
+
+    clientUDP.beginPacket(GATEWAY_IP_ADDRESS, GATEWAY_PORT);
+    clientUDP.print((char *)buf);
+
+    if (clientUDP.endPacket()) {
+        ESP_LOGD(TAG, "Time request complete!");
+    } else {
+        ESP_LOGE(TAG, "Time request failed!");
+    }
+    
+    clientUDP.parsePacket();
+    if (clientUDP.read((unsigned char *)buf, sizeof(buf))) {
+        if (buf[0] == BUS_PROTOCOL_BOARD_ID_ESP &&
+            buf[1] == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND) 
+        {
+            memcpy(&utc, &buf[2], sizeof(uint32_t));
+
+            struct timeval now = { .tv_sec = utc };
+            settimeofday(&now, NULL);
+        }
+    }
+
+    // struct timeval tv;
+    // gettimeofday(&tv, NULL);
+
+    return utc;
+}
+
 void source_modulation(Stream *stream, sensor_data_t *sensor_data) {
     bus_protocol_data_request_encode(BUS_PROTOCOL_BOARD_ID_ESP, buffer, &buffer_length);
     stream->write(buffer, buffer_length);
@@ -397,3 +443,4 @@ void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
     }
     Serial.printf("%02X\r\n", array[array_length-1]);
 }
+
