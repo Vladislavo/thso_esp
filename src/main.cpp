@@ -11,6 +11,8 @@
 
 #include <Adafruit_ADS1015.h>
 
+#include <Time.h>
+
 #define BAUDRATE                            115200
 
 #define DHT22_READ_RETRIES                  100
@@ -20,6 +22,7 @@
 #define MKR_SYNC_PIN                        19
 
 #define BUS_PROTOCOL_MAX_PACKET_SIZE        128
+#define GATEWAY_PROTOCOL_MAX_PACKET_SIZE    150
 #define BUS_PROTOCOL_MAX_WAITING_TIME       300
 
 #define WIS_TX_PIN                          17
@@ -74,6 +77,8 @@ typedef struct {
 } mkr_sensor_data_t;
 
 typedef struct {
+    uint32_t utc;
+    char timedate[32];
     esp_sensor_data_t esp_sensor_data;
     wis_sensor_data_t wis_sensor_data;
     mkr_sensor_data_t mkr_sensor_data;
@@ -108,15 +113,26 @@ uint8_t bus_protocol_data_send_decode(
     const uint8_t payload_length);
 
 uint32_t gateway_protocol_get_time();
+void  gateway_protocol_send_data_payload_encode (
+    const sensor_data_t *sensor_data, 
+    uint8_t *payload, 
+    uint8_t *payload_length);
 
 void source_modulation(Stream *stream, sensor_data_t *sensor_data);
 void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep);
+void set_timestamp(sensor_data_t *sensor_data);
+time_t time_sync();
+uint8_t send_udp_datagram (
+    const IPAddress ip, 
+    const uint16_t port, 
+    const uint8_t *packet, 
+    const uint8_t packet_length);
 
 sensor_data_t sensor_data;
 
-uint8_t buffer[BUS_PROTOCOL_MAX_PACKET_SIZE];
+uint8_t buffer[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
 uint8_t buffer_length = 0;
-uint8_t payload[BUS_PROTOCOL_MAX_PACKET_SIZE];
+uint8_t payload[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
 uint8_t payload_length = 0;
 
 void setup() {
@@ -149,6 +165,10 @@ void setup() {
     Serial.println(WiFi.localIP()); //print LAN IP
 
     clientUDP.begin(GATEWAY_PORT);
+
+    gateway_protocol_get_time();
+    setSyncProvider((getExternalTime)time_sync());
+    setSyncInterval(300);
 }
 
 float t, h;
@@ -159,46 +179,60 @@ int ofs;
 void loop() {
     ESP_LOGD(TAG, "Time : %d\r\n", gateway_protocol_get_time());
 
-    // read_sensors(&sensor_data.esp_sensor_data);
-    // source_modulation(&bus_wis, &sensor_data);
-    // source_modulation(&bus_mkr, &sensor_data);
+    read_sensors(&sensor_data.esp_sensor_data);
+    source_modulation(&bus_wis, &sensor_data);
+    source_modulation(&bus_mkr, &sensor_data);
 
-    // ESP_LOGD(TAG,   "WIS data: \r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f\r\n"
-    //                 "\t%0.2f",
-    //                 sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
-    //                 sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
-    //                 sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
-    //                 sensor_data.wis_sensor_data.hh10d,
-    //                 sensor_data.wis_sensor_data.tmp102);
+    ESP_LOGD(TAG,   "WIS data: \r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f\r\n"
+                    "\t%0.2f",
+                    sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
+                    sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
+                    sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
+                    sensor_data.wis_sensor_data.hh10d,
+                    sensor_data.wis_sensor_data.tmp102);
 
-    // ESP_LOGD(TAG,   "MKR data: \r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f\r\n",
-    //                 sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
-    //                 sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
-    //                 sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
-    //                 sensor_data.mkr_sensor_data.hh10d);
+    ESP_LOGD(TAG,   "MKR data: \r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f\r\n",
+                    sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
+                    sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
+                    sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
+                    sensor_data.mkr_sensor_data.hh10d);
 
-    // ESP_LOGD(TAG,   "ESP data: \r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f, %0.2f\r\n"
-    //                 "\t%0.2f\r\n"
-    //                 "\t%0.2f\r\n"
-    //                 "\t%0.2f, %0.2f, %0.2f\r\n",
-    //                 sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
-    //                 sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
-    //                 sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
-    //                 sensor_data.esp_sensor_data.hh10d,
-    //                 sensor_data.esp_sensor_data.hih4030,
-    //                 sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
+    ESP_LOGD(TAG,   "ESP data: \r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f, %0.2f\r\n"
+                    "\t%0.2f\r\n"
+                    "\t%0.2f\r\n"
+                    "\t%0.2f, %0.2f, %0.2f\r\n",
+                    sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
+                    sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
+                    sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
+                    sensor_data.esp_sensor_data.hh10d,
+                    sensor_data.esp_sensor_data.hih4030,
+                    sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
 
+    gateway_protocol_send_data_payload_encode(&sensor_data, payload, &payload_length);
+    gateway_protocol_packet_encode(
+        BUS_PROTOCOL_BOARD_ID_ESP,
+        GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND,
+        payload_length, payload,
+        &buffer_length, buffer);
+
+    ESP_LOGD(TAG, "sending %d bytes...", buffer_length);
+
+    if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length)) {
+        ESP_LOGD(TAG, "data send done!");
+    } else {
+        ESP_LOGD(TAG, "data send error");
+    }
 
     delay(5000);
 }
@@ -381,15 +415,12 @@ uint32_t gateway_protocol_get_time() {
                                 0, buf,
                                 &buf_len, buf);
 
-    clientUDP.beginPacket(GATEWAY_IP_ADDRESS, GATEWAY_PORT);
-    clientUDP.print((char *)buf);
-
-    if (clientUDP.endPacket()) {
+    if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buf, buf_len)) {
         ESP_LOGD(TAG, "Time request complete!");
     } else {
         ESP_LOGE(TAG, "Time request failed!");
     }
-    
+
     clientUDP.parsePacket();
     if (clientUDP.read((unsigned char *)buf, sizeof(buf))) {
         if (buf[0] == BUS_PROTOCOL_BOARD_ID_ESP &&
@@ -406,6 +437,102 @@ uint32_t gateway_protocol_get_time() {
     // gettimeofday(&tv, NULL);
 
     return utc;
+}
+
+void  gateway_protocol_send_data_payload_encode (
+    const sensor_data_t *sensor_data, 
+    uint8_t *payload, 
+    uint8_t *payload_length) 
+{
+    *payload_length = 0;
+
+    memcpy(&payload[*payload_length], &sensor_data->utc, sizeof(sensor_data->utc));
+    (*payload_length) += sizeof(sensor_data->utc);
+
+    memcpy(&payload[*payload_length], sensor_data->timedate, sizeof(sensor_data->timedate));
+    // (*payload_length) += sizeof(sensor_data->timedate);
+    (*payload_length) += 32;
+
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.dht22_t, sizeof(sensor_data->esp_sensor_data.dht22_t));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.dht22_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.dht22_h, sizeof(sensor_data->esp_sensor_data.dht22_h));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.dht22_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.sht85_t, sizeof(sensor_data->esp_sensor_data.sht85_t));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.sht85_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.sht85_h, sizeof(sensor_data->esp_sensor_data.sht85_h));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.sht85_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.hih8121_t, sizeof(sensor_data->esp_sensor_data.hih8121_t));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.hih8121_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.hih8121_h, sizeof(sensor_data->esp_sensor_data.hih8121_h));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.hih8121_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.tmp36_0, sizeof(sensor_data->esp_sensor_data.tmp36_0));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.tmp36_0);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.tmp36_1, sizeof(sensor_data->esp_sensor_data.tmp36_1));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.tmp36_1);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.tmp36_2, sizeof(sensor_data->esp_sensor_data.tmp36_2));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.tmp36_2);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.hih4030, sizeof(sensor_data->esp_sensor_data.hih4030));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.hih4030);
+
+    memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.hh10d, sizeof(sensor_data->esp_sensor_data.hh10d));
+    (*payload_length) += sizeof(sensor_data->esp_sensor_data.hh10d);
+
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.dht22_t, sizeof(sensor_data->mkr_sensor_data.dht22_t));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.dht22_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.dht22_h, sizeof(sensor_data->mkr_sensor_data.dht22_h));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.dht22_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.sht85_t, sizeof(sensor_data->mkr_sensor_data.sht85_t));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.sht85_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.sht85_h, sizeof(sensor_data->mkr_sensor_data.sht85_h));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.sht85_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.hih8121_t, sizeof(sensor_data->mkr_sensor_data.hih8121_t));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.hih8121_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.hih8121_h, sizeof(sensor_data->mkr_sensor_data.hih8121_h));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.hih8121_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->mkr_sensor_data.hh10d, sizeof(sensor_data->mkr_sensor_data.hh10d));
+    (*payload_length) += sizeof(sensor_data->mkr_sensor_data.hh10d);
+
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.dht22_t, sizeof(sensor_data->wis_sensor_data.dht22_t));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.dht22_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.dht22_h, sizeof(sensor_data->wis_sensor_data.dht22_h));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.dht22_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.sht85_t, sizeof(sensor_data->wis_sensor_data.sht85_t));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.sht85_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.sht85_h, sizeof(sensor_data->wis_sensor_data.sht85_h));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.sht85_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.hih8121_t, sizeof(sensor_data->wis_sensor_data.hih8121_t));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.hih8121_t);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.hih8121_h, sizeof(sensor_data->wis_sensor_data.hih8121_h));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.hih8121_h);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.tmp102, sizeof(sensor_data->wis_sensor_data.tmp102));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.tmp102);
+
+    memcpy(&payload[*payload_length], &sensor_data->wis_sensor_data.hh10d, sizeof(sensor_data->wis_sensor_data.hh10d));
+    (*payload_length) += sizeof(sensor_data->wis_sensor_data.hh10d);
 }
 
 void source_modulation(Stream *stream, sensor_data_t *sensor_data) {
@@ -444,3 +571,29 @@ void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
     Serial.printf("%02X\r\n", array[array_length-1]);
 }
 
+void set_timestamp(sensor_data_t *sensor_data) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
+    sensor_data->utc = tv.tv_sec;
+    sprintf(sensor_data->timedate, "%d/%d/%d %d:%d:%d", day(), month(), year(), hour(), minute(), second());
+}
+
+time_t time_sync() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    
+    return tv.tv_sec;
+}
+
+uint8_t send_udp_datagram (
+    const IPAddress ip, 
+    const uint16_t port, 
+    const uint8_t *packet, 
+    const uint8_t packet_length) 
+{
+    clientUDP.beginPacket(GATEWAY_IP_ADDRESS, GATEWAY_PORT);
+    clientUDP.write(packet, packet_length);
+
+    return clientUDP.endPacket();
+}
