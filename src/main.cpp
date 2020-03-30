@@ -35,8 +35,11 @@
 #define WIFI_SSID                           "ISRcomunicaciones34"
 #define WIFI_PASSWORD                       "16818019"
 
-#define GATEWAY_IP_ADDRESS                  IPAddress(192,168,0,102)
+#define GATEWAY_IP_ADDRESS                  IPAddress(192,168,0,100)
 #define GATEWAY_PORT                        9043
+
+#define TIME_ZONE                           2 // +2 Madrid
+#define TIME_REQUEST_RETRIES                5
 
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
@@ -112,7 +115,7 @@ uint8_t bus_protocol_data_send_decode(
     const uint8_t *payload,
     const uint8_t payload_length);
 
-uint32_t gateway_protocol_get_time();
+time_t gateway_protocol_get_time();
 void  gateway_protocol_send_data_payload_encode (
     const sensor_data_t *sensor_data, 
     uint8_t *payload, 
@@ -166,8 +169,7 @@ void setup() {
 
     clientUDP.begin(GATEWAY_PORT);
 
-    gateway_protocol_get_time();
-    setSyncProvider((getExternalTime)time_sync());
+    setSyncProvider(gateway_protocol_get_time);
     setSyncInterval(300);
 }
 
@@ -177,11 +179,12 @@ int sens;
 int ofs;
 
 void loop() {
-    ESP_LOGD(TAG, "Time : %d\r\n", gateway_protocol_get_time());
-
     read_sensors(&sensor_data.esp_sensor_data);
     source_modulation(&bus_wis, &sensor_data);
     source_modulation(&bus_mkr, &sensor_data);
+
+    set_timestamp(&sensor_data);
+    ESP_LOGD(TAG, "ascime : %s\r\n", sensor_data.timedate);
 
     ESP_LOGD(TAG,   "WIS data: \r\n"
                     "\t%0.2f, %0.2f\r\n"
@@ -219,20 +222,20 @@ void loop() {
                     sensor_data.esp_sensor_data.hih4030,
                     sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
 
-    gateway_protocol_send_data_payload_encode(&sensor_data, payload, &payload_length);
-    gateway_protocol_packet_encode(
-        BUS_PROTOCOL_BOARD_ID_ESP,
-        GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND,
-        payload_length, payload,
-        &buffer_length, buffer);
+    // gateway_protocol_send_data_payload_encode(&sensor_data, payload, &payload_length);
+    // gateway_protocol_packet_encode(
+    //     BUS_PROTOCOL_BOARD_ID_ESP,
+    //     GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND,
+    //     payload_length, payload,
+    //     &buffer_length, buffer);
 
-    ESP_LOGD(TAG, "sending %d bytes...", buffer_length);
+    // ESP_LOGD(TAG, "sending %d bytes...", buffer_length);
 
-    if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length)) {
-        ESP_LOGD(TAG, "data send done!");
-    } else {
-        ESP_LOGD(TAG, "data send error");
-    }
+    // if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length)) {
+    //     ESP_LOGD(TAG, "data send done!");
+    // } else {
+    //     ESP_LOGD(TAG, "data send error");
+    // }
 
     delay(5000);
 }
@@ -404,10 +407,11 @@ uint8_t bus_protocol_data_send_decode(
     return p_len == payload_length;
 }
 
-uint32_t gateway_protocol_get_time() {
+time_t gateway_protocol_get_time() {
     uint32_t utc = 0;
     uint8_t buf[32];
     uint8_t buf_len = 0;
+    uint8_t retries = 0;
 
     gateway_protocol_packet_encode(
                                 (uint8_t) BUS_PROTOCOL_BOARD_ID_ESP, 
@@ -415,28 +419,29 @@ uint32_t gateway_protocol_get_time() {
                                 0, buf,
                                 &buf_len, buf);
 
-    if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buf, buf_len)) {
-        ESP_LOGD(TAG, "Time request complete!");
-    } else {
-        ESP_LOGE(TAG, "Time request failed!");
-    }
-
-    clientUDP.parsePacket();
-    if (clientUDP.read((unsigned char *)buf, sizeof(buf))) {
-        if (buf[0] == BUS_PROTOCOL_BOARD_ID_ESP &&
-            buf[1] == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND) 
-        {
-            memcpy(&utc, &buf[2], sizeof(uint32_t));
-
-            struct timeval now = { .tv_sec = utc };
-            settimeofday(&now, NULL);
+    do {
+        if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buf, buf_len)) {
+            ESP_LOGD(TAG, "Time request complete!");
+        } else {
+            ESP_LOGE(TAG, "Time request failed!");
         }
-    }
 
-    // struct timeval tv;
-    // gettimeofday(&tv, NULL);
+        clientUDP.parsePacket();
+        if (clientUDP.read((unsigned char *)buf, sizeof(buf))) {
+            if (buf[0] == BUS_PROTOCOL_BOARD_ID_ESP &&
+                buf[1] == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND) 
+            {
+                memcpy(&utc, &buf[2], sizeof(uint32_t));
 
-    return utc;
+                struct timeval now = { .tv_sec = utc };
+                settimeofday(&now, NULL);
+
+                setTime(utc);
+            }
+        }
+    } while (utc == 0 && retries++ < TIME_REQUEST_RETRIES);
+
+    return (time_t) utc;
 }
 
 void  gateway_protocol_send_data_payload_encode (
@@ -545,9 +550,6 @@ void source_modulation(Stream *stream, sensor_data_t *sensor_data) {
         digitalWrite(LED_SERIAL, LOW);
     }
 
-    // Serial.printf("Received bus (%d bytes): ", buffer_length);
-    // print_array_hex(buffer, buffer_length, " : ");
-
     switch (bus_protocol_packet_decode(buffer, buffer_length, payload, &payload_length)) {
         case BUS_PROTOCOL_PACKET_TYPE_DATA_SEND :
             digitalWrite(LED_SERIAL, HIGH);
@@ -572,14 +574,19 @@ void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
 }
 
 void set_timestamp(sensor_data_t *sensor_data) {
+    if (now() < 10000) {
+        gateway_protocol_get_time();
+    }
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
     sensor_data->utc = tv.tv_sec;
-    sprintf(sensor_data->timedate, "%d/%d/%d %d:%d:%d", day(), month(), year(), hour(), minute(), second());
+    sprintf(sensor_data->timedate, "%d/%d/%d %d:%d:%d", day(), month(), year(), hour()+TIME_ZONE, minute(), second());
 }
 
 time_t time_sync() {
+    gateway_protocol_get_time();
+
     struct timeval tv;
     gettimeofday(&tv, NULL);
     
