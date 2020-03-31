@@ -8,10 +8,13 @@
 
 #include <bus_protocol/bus_protocol.h>
 #include <gateway_protocol/gateway_protocol.h>
+#include <device_control.h>
 
 #include <Adafruit_ADS1015.h>
 
 #include <Time.h>
+
+#include "driver/periph_ctrl.h"
 
 #define BAUDRATE                            115200
 
@@ -41,8 +44,18 @@
 #define TIME_ZONE                           2 // +2 Madrid
 #define TIME_REQUEST_RETRIES                5
 
+#define GET_DATA                            0
+#define SET_CONF                            1
+#define DEV_REBOOT                          2
+
+#define DEFAULT_SAMPLE_PERIOD               60000
+
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
+
+typedef struct {
+    uint32_t sample_period; // 1 min default
+} dev_conf_t;
 
 typedef struct {
     float dht22_t   = .0;
@@ -139,6 +152,15 @@ uint8_t buffer_length = 0;
 uint8_t payload[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
 uint8_t payload_length = 0;
 
+dev_conf_t dev_conf;
+
+float t, h;
+
+int sens;
+int ofs;
+
+gateway_protocol_stat_t g_stat = GATEWAY_PROTOCOL_STAT_NACK;
+
 void setup() {
     Serial.begin(BAUDRATE);
     Wire.begin();
@@ -173,14 +195,9 @@ void setup() {
 
     setSyncProvider(gateway_protocol_get_time);
     setSyncInterval(300);
+
+    dev_conf.sample_period = DEFAULT_SAMPLE_PERIOD;
 }
-
-float t, h;
-
-int sens;
-int ofs;
-
-gateway_protocol_stat_t g_stat = GATEWAY_PROTOCOL_STAT_NACK;
 
 void loop() {
     read_sensors(&sensor_data.esp_sensor_data);
@@ -257,7 +274,20 @@ void loop() {
                     ESP_LOGD(TAG, "PEND SEND received");
                     print_array_hex(buffer, buffer_length, " : ");
 
-                    
+                    uint8_t op, arg_len, args[32];
+                    device_control_packet_decode(&op, &arg_len, args, buffer_length, buffer);
+
+                    if (op == GET_DATA) {
+                        // extra data_send
+                    } else if (op == SET_CONF) {
+                        // set 
+                    } else if (op == DEV_REBOOT) {
+                        periph_module_reset(PERIPH_WIFI_MODULE);
+                        ESP.restart();
+                        // see peripherals reset
+                    } else {
+                        // error
+                    }
                 }
             }
         } else {
