@@ -43,12 +43,13 @@
 
 #define TIME_ZONE                           2 // +2 Madrid
 #define TIME_REQUEST_RETRIES                5
+#define DATA_SEND_RETRIES_MAX               5
 
 #define GET_DATA                            0
-#define SET_CONF                            1
+#define SET_SAMPLING_PERIOD                 1
 #define DEV_REBOOT                          2
 
-#define DEFAULT_SAMPLE_PERIOD               60000
+#define DEFAULT_SAMPLE_PERIOD               30000
 
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
@@ -107,6 +108,11 @@ Adafruit_ADS1115 ads;
 
 WiFiUDP clientUDP;
 
+hw_timer_t *timer = NULL;
+volatile uint8_t sample_flag = 1;
+
+void IRAM_ATTR onTimer();
+
 void setup_hh10d();
 
 void read_dht22(esp_sensor_data_t *sensor_data);
@@ -129,6 +135,7 @@ uint8_t bus_protocol_data_send_decode(
     const uint8_t payload_length);
 
 time_t gateway_protocol_get_time();
+void gateway_protocol_send_stat(gateway_protocol_stat_t stat);
 void  gateway_protocol_send_data_payload_encode (
     const sensor_data_t *sensor_data, 
     uint8_t *payload, 
@@ -180,6 +187,7 @@ void setup() {
     pinMode(WIS_SYNC_PIN, OUTPUT);
     pinMode(MKR_SYNC_PIN, OUTPUT);
 
+    periph_module_reset(PERIPH_WIFI_MODULE);
     WiFi.disconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     WiFi.setSleep(false);
@@ -197,107 +205,140 @@ void setup() {
     setSyncInterval(300);
 
     dev_conf.sample_period = DEFAULT_SAMPLE_PERIOD;
+    timer = timerBegin(0, 80, true);
+    timerAttachInterrupt(timer, &onTimer, true);
+    timerAlarmWrite(timer, dev_conf.sample_period*1000, true);
+    timerAlarmEnable(timer);
 }
 
 void loop() {
-    read_sensors(&sensor_data.esp_sensor_data);
-    source_modulation(&bus_wis, &sensor_data);
-    source_modulation(&bus_mkr, &sensor_data);
+    if (sample_flag) {
+        read_sensors(&sensor_data.esp_sensor_data);
+        source_modulation(&bus_wis, &sensor_data);
+        source_modulation(&bus_mkr, &sensor_data);
 
-    set_timestamp(&sensor_data);
+        set_timestamp(&sensor_data);
 
-    ESP_LOGD(TAG,   "WIS data: \r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f\r\n"
-                    "\t%0.2f",
-                    sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
-                    sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
-                    sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
-                    sensor_data.wis_sensor_data.hh10d,
-                    sensor_data.wis_sensor_data.tmp102);
+        ESP_LOGD(TAG,   "WIS data: \r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f\r\n"
+                        "\t%0.2f",
+                        sensor_data.wis_sensor_data.dht22_t, sensor_data.wis_sensor_data.dht22_h,
+                        sensor_data.wis_sensor_data.sht85_t, sensor_data.wis_sensor_data.sht85_h,
+                        sensor_data.wis_sensor_data.hih8121_t, sensor_data.wis_sensor_data.hih8121_h,
+                        sensor_data.wis_sensor_data.hh10d,
+                        sensor_data.wis_sensor_data.tmp102);
 
-    ESP_LOGD(TAG,   "MKR data: \r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f\r\n",
-                    sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
-                    sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
-                    sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
-                    sensor_data.mkr_sensor_data.hh10d);
+        ESP_LOGD(TAG,   "MKR data: \r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f\r\n",
+                        sensor_data.mkr_sensor_data.dht22_t, sensor_data.mkr_sensor_data.dht22_h,
+                        sensor_data.mkr_sensor_data.sht85_t, sensor_data.mkr_sensor_data.sht85_h,
+                        sensor_data.mkr_sensor_data.hih8121_t, sensor_data.mkr_sensor_data.hih8121_h,
+                        sensor_data.mkr_sensor_data.hh10d);
 
-    ESP_LOGD(TAG,   "ESP data: \r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f, %0.2f\r\n"
-                    "\t%0.2f\r\n"
-                    "\t%0.2f\r\n"
-                    "\t%0.2f, %0.2f, %0.2f\r\n",
-                    sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
-                    sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
-                    sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
-                    sensor_data.esp_sensor_data.hh10d,
-                    sensor_data.esp_sensor_data.hih4030,
-                    sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
+        ESP_LOGD(TAG,   "ESP data: \r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f, %0.2f\r\n"
+                        "\t%0.2f\r\n"
+                        "\t%0.2f\r\n"
+                        "\t%0.2f, %0.2f, %0.2f\r\n",
+                        sensor_data.esp_sensor_data.dht22_t, sensor_data.esp_sensor_data.dht22_h,
+                        sensor_data.esp_sensor_data.sht85_t, sensor_data.esp_sensor_data.sht85_h,
+                        sensor_data.esp_sensor_data.hih8121_t, sensor_data.esp_sensor_data.hih8121_h,
+                        sensor_data.esp_sensor_data.hh10d,
+                        sensor_data.esp_sensor_data.hih4030,
+                        sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
 
-    
-    g_stat = send_sensor_data(&sensor_data);
-    
-    if (g_stat == GATEWAY_PROTOCOL_STAT_ACK) {
-        ESP_LOGD(TAG, "ACK received");
-    } else if (g_stat == GATEWAY_PROTOCOL_STAT_ACK_PEND) {
-        ESP_LOGD(TAG, "ACK_PEND received");
-        gateway_protocol_packet_encode(
-            BUS_PROTOCOL_BOARD_ID_ESP,
-            GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ,
-            0, buffer,
-            &buffer_length, buffer);
-
-        send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length);
         
-        uint32_t wait_ms = millis() + 1000;
-        while(!clientUDP.parsePacket() && wait_ms > millis()) {}
-        if ((buffer_length = clientUDP.read(buffer, sizeof(buffer)))) {
-            uint8_t dev_id;
-            gateway_protocol_packet_type_t p_type;
-            if (gateway_protocol_packet_decode(
-                &dev_id,
-                &p_type,
-                &buffer_length, buffer,
-                buffer_length, buffer))
-            {
-                if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
-                    p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND) 
+        g_stat = send_sensor_data(&sensor_data);
+        
+        if (g_stat == GATEWAY_PROTOCOL_STAT_ACK) {
+            ESP_LOGD(TAG, "ACK received");
+        } else if (g_stat == GATEWAY_PROTOCOL_STAT_ACK_PEND) {
+            ESP_LOGD(TAG, "ACK_PEND received");
+            gateway_protocol_packet_encode(
+                BUS_PROTOCOL_BOARD_ID_ESP,
+                GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ,
+                0, buffer,
+                &buffer_length, buffer);
+
+            send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length);
+            
+            uint32_t wait_ms = millis() + 1000;
+            while(!clientUDP.parsePacket() && wait_ms > millis()) {}
+            if ((buffer_length = clientUDP.read(buffer, sizeof(buffer)))) {
+                uint8_t dev_id;
+                gateway_protocol_packet_type_t p_type;
+                if (gateway_protocol_packet_decode(
+                    &dev_id,
+                    &p_type,
+                    &buffer_length, buffer,
+                    buffer_length, buffer))
                 {
-                    ESP_LOGD(TAG, "PEND SEND received");
-                    print_array_hex(buffer, buffer_length, " : ");
+                    if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
+                        p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND)
+                    {
+                        ESP_LOGD(TAG, "PEND SEND received");
+                        print_array_hex(buffer, buffer_length, " : ");
 
-                    uint8_t op, arg_len, args[32];
-                    device_control_packet_decode(&op, &arg_len, args, buffer_length, buffer);
+                        uint8_t op, arg_len, args[32];
 
-                    if (op == GET_DATA) {
-                        // extra data_send
-                    } else if (op == SET_CONF) {
-                        // set 
-                    } else if (op == DEV_REBOOT) {
-                        periph_module_reset(PERIPH_WIFI_MODULE);
-                        ESP.restart();
-                        // see peripherals reset
-                    } else {
-                        // error
+                        device_control_packet_decode(&op, &arg_len, args, buffer_length, buffer);
+
+                        ESP_LOGD(TAG, "PEND SEND decoded op = %d, arg_len = %d, args : ", op, arg_len);
+                        print_array_hex(args, arg_len, " : ");
+
+                        if (op == GET_DATA) {
+                            // extra data_send
+                            gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
+                            // assign extra data send
+                            sample_flag = 1;
+                        } else if (op == SET_SAMPLING_PERIOD) {
+                            uint32_t samp_period;
+                            if (arg_len == sizeof(samp_period)) {
+                                memcpy(&samp_period, args, sizeof(samp_period));
+                                dev_conf.sample_period = samp_period;
+
+                                timerEnd(timer);
+                                timer = timerBegin(0, 80, true);
+                                timerAttachInterrupt(timer, &onTimer, true);
+                                timerAlarmWrite(timer, dev_conf.sample_period*1000, true);
+                                timerAlarmEnable(timer);
+
+                                ESP_LOGD(TAG, "sampling period set to %lu", dev_conf.sample_period);
+
+                                gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
+                            } else {
+                                ESP_LOGE(TAG, "arg_len error %d != 4", arg_len);
+                                gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
+                            }
+                        } else if (op == DEV_REBOOT) {
+                            ESP_LOGD(TAG, "going to restart...");
+                            gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
+                            periph_module_reset(PERIPH_WIFI_MODULE);
+                            ESP.restart();
+                            // see peripherals reset
+                        } else {
+                            // error unknown op
+                            ESP_LOGE(TAG, "UNKNOWN OPERATION");
+                            gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
+                        }
                     }
                 }
+            } else {
+                ESP_LOGD(TAG, "NO PEND SEND received");
             }
         } else {
-            ESP_LOGD(TAG, "NO PEND SEND received");
+            ESP_LOGD(TAG, "NACK %02X", g_stat);
         }
-    } else {
-        ESP_LOGD(TAG, "NACK %02X", g_stat);
+        sample_flag = 0;
     }
-
-    delay(7000);
 }
 
 // function to intitialize HH10D
@@ -521,6 +562,22 @@ time_t gateway_protocol_get_time() {
     return (time_t) utc;
 }
 
+void gateway_protocol_send_stat(gateway_protocol_stat_t stat) {
+    // uint8_t pck[10];
+    // uint8_t pck_len = 0;
+
+    ESP_LOGD(TAG, "encoding...");
+    gateway_protocol_packet_encode (
+        BUS_PROTOCOL_BOARD_ID_ESP,
+        GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
+        1, (uint8_t *)&stat,
+        &buffer_length, buffer);
+    
+    print_array_hex(buffer, buffer_length, ":");
+
+    send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length);
+}
+
 void  gateway_protocol_send_data_payload_encode (
     const sensor_data_t *sensor_data, 
     uint8_t *payload, 
@@ -619,43 +676,58 @@ void  gateway_protocol_send_data_payload_encode (
 
 gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
     gateway_protocol_stat_t g_stat = GATEWAY_PROTOCOL_STAT_NACK;
+    uint8_t data_send_retries = DATA_SEND_RETRIES_MAX;
+    uint8_t received_ack = 0;
+
     gateway_protocol_send_data_payload_encode(sensor_data, payload, &payload_length);
-    gateway_protocol_packet_encode(
-        BUS_PROTOCOL_BOARD_ID_ESP,
-        GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND,
-        payload_length, payload,
-        &buffer_length, buffer);
-
-    ESP_LOGD(TAG, "sending %d bytes...", buffer_length);
-
-    if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length)) {
-        ESP_LOGD(TAG, "data send done!");
-    } else {
-        ESP_LOGD(TAG, "data send error");
-    }
     
-    uint32_t wait_ms = millis() + 1000;
-    while(!clientUDP.parsePacket() && wait_ms > millis()) {}
-    if ((buffer_length = clientUDP.read((unsigned char *)buffer, sizeof(buffer)))) {
-        uint8_t dev_id;
-        gateway_protocol_packet_type_t p_type;
-        if (gateway_protocol_packet_decode(
-            &dev_id,
-            &p_type,
-            &buffer_length, buffer,
-            buffer_length, buffer)) 
-        {
-            if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
-                p_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
-                buffer_length == 1) 
-            {
-                g_stat = (gateway_protocol_stat_t) buffer[0];
-                ESP_LOGD(TAG, "STAT RECEIVED %02X", g_stat);
-            }
+    do {
+        gateway_protocol_packet_encode(
+            BUS_PROTOCOL_BOARD_ID_ESP,
+            GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND,
+            payload_length, payload,
+            &buffer_length, buffer);
+
+        ESP_LOGD(TAG, "sending %d bytes...", buffer_length);
+
+
+        if (send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length)) {
+            ESP_LOGD(TAG, "data send done!");
+        } else {
+            ESP_LOGD(TAG, "data send error");
         }
-    } else {
-        ESP_LOGD(TAG, "NO STAT RECEIVED");
-    }
+        
+        uint32_t wait_ms = millis() + 1000;
+        while(!clientUDP.parsePacket() && wait_ms > millis()) {}
+        if ((buffer_length = clientUDP.read((unsigned char *)buffer, sizeof(buffer)))) {
+            uint8_t dev_id;
+            gateway_protocol_packet_type_t p_type;
+            ESP_LOGD(TAG, "ack resoponse : ");
+            print_array_hex(buffer, buffer_length, " : ");
+
+            if (gateway_protocol_packet_decode(
+                &dev_id,
+                &p_type,
+                &buffer_length, buffer,
+                buffer_length, buffer)) 
+            {
+                if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
+                    p_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
+                    buffer_length == 1)
+                {
+                    g_stat = (gateway_protocol_stat_t) buffer[0];
+                    received_ack = 1;
+                    ESP_LOGD(TAG, "STAT RECEIVED %02X", g_stat);
+                } else {
+                    ESP_LOGD(TAG, "STAT content error dev_id = %02X, p_type = %02X, buf = %02X", dev_id, p_type, buffer[0]);
+                }
+            } else {
+                ESP_LOGD(TAG, "STAT packet decode error");
+            }
+        } else {
+            ESP_LOGD(TAG, "NO STAT RECEIVED");
+        }
+    } while (!received_ack && data_send_retries--);
 
     return g_stat;
 }
@@ -723,4 +795,8 @@ uint8_t send_udp_datagram (
     clientUDP.write(packet, packet_length);
 
     return clientUDP.endPacket();
+}
+
+void IRAM_ATTR onTimer() {
+    sample_flag = 1;
 }
