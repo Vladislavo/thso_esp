@@ -40,7 +40,7 @@
 
 #define GATEWAY_IP_ADDRESS                  IPAddress(192,168,4,1)
 #define GATEWAY_PORT                        9043
-#define GATEWAY_APP_KEY                     "lalal"
+#define GATEWAY_APP_KEY                     "e6736c46"
 #define GATEWAY_DEV_ID                      1
 
 #define TIME_ZONE                           2 // +2 Madrid
@@ -452,7 +452,7 @@ uint8_t bus_protocol_data_send_decode(
 
 time_t gateway_protocol_get_time() {
     uint32_t utc = 0;
-    uint8_t buf[32];
+    uint8_t buf[50];
     uint8_t buf_len = 0;
     uint8_t retries = 0;
 
@@ -505,13 +505,10 @@ void gateway_protocol_send_stat(gateway_protocol_stat_t stat) {
     // uint8_t pck[10];
     // uint8_t pck_len = 0;
 
-    ESP_LOGD(TAG, "encoding...");
     gateway_protocol_packet_encode (
         GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
         1, (uint8_t *)&stat,
         &buffer_length, buffer);
-    
-    print_array_hex(buffer, buffer_length, ":");
 
     send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length);
 }
@@ -647,8 +644,9 @@ void gateway_protocol_req_pend() {
                     sample_flag = 1;
                 } else if (op == SET_SAMPLING_PERIOD) {
                     uint32_t samp_period;
-                    if (arg_len == sizeof(samp_period)) {
-                        memcpy(&samp_period, args, sizeof(samp_period));
+                    // if (arg_len == sizeof(samp_period)) {
+                        samp_period = atoi((char *)args);
+                        // memcpy(&samp_period, args, sizeof(samp_period));
                         dev_conf.sample_period = samp_period;
 
                         timerEnd(timer);
@@ -657,13 +655,13 @@ void gateway_protocol_req_pend() {
                         timerAlarmWrite(timer, dev_conf.sample_period*1000, true);
                         timerAlarmEnable(timer);
 
-                        ESP_LOGD(TAG, "sampling period set to %lu", dev_conf.sample_period);
+                        ESP_LOGD(TAG, "sampling period set to %lu from %s", dev_conf.sample_period, args);
 
                         gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
-                    } else {
-                        ESP_LOGE(TAG, "arg_len error %d != 4", arg_len);
-                        gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
-                    }
+                    // } else {
+                    //     ESP_LOGE(TAG, "arg_len error %d != 4", arg_len);
+                    //     gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
+                    // }
                 } else if (op == DEV_REBOOT) {
                     ESP_LOGD(TAG, "going to restart...");
                     gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
