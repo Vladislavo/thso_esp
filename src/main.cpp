@@ -40,6 +40,8 @@
 
 #define GATEWAY_IP_ADDRESS                  IPAddress(192,168,4,1)
 #define GATEWAY_PORT                        9043
+#define GATEWAY_APP_KEY                     "lalal"
+#define GATEWAY_DEV_ID                      1
 
 #define TIME_ZONE                           2 // +2 Madrid
 #define TIME_REQUEST_RETRIES                50
@@ -50,9 +52,6 @@
 #define DEV_REBOOT                          2
 
 #define DEFAULT_SAMPLE_PERIOD               600000 // 10min
-
-#define GATEWAY_APP_KEY                     "lalal"
-#define GATEWAY_DEV_ID                      1
 
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
@@ -143,6 +142,7 @@ void  gateway_protocol_send_data_payload_encode (
     const sensor_data_t *sensor_data, 
     uint8_t *payload, 
     uint8_t *payload_length);
+void gateway_protocol_req_pend();
 gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data);
 
 void read_sensors_bus(Stream *stream, sensor_data_t *sensor_data);
@@ -201,14 +201,14 @@ void setup() {
         cnt--;
     }
     if (!cnt) {
-        Serial.println("WiFi not connected -> restart!");
+        ESP_LOGE(TAG, "WiFi not connected -> restart!");
         periph_module_reset(PERIPH_WIFI_MODULE);
         ESP.restart();
     }
 
-    Serial.println("WiFi connected");
-    Serial.println("IP address set: ");
-    Serial.println(WiFi.localIP()); //print LAN IP
+    ESP_LOGD(TAG, "WiFi connected");
+    // Serial.println("IP address set: ");
+    // Serial.println(WiFi.localIP()); //print LAN IP
 
     clientUDP.begin(GATEWAY_PORT);
 
@@ -275,74 +275,7 @@ void loop() {
             ESP_LOGD(TAG, "ACK received");
         } else if (g_stat == GATEWAY_PROTOCOL_STAT_ACK_PEND) {
             ESP_LOGD(TAG, "ACK_PEND received");
-            gateway_protocol_packet_encode(
-                GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ,
-                0, buffer,
-                &buffer_length, buffer);
-
-            send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length);
-            
-            uint32_t wait_ms = millis() + 1000;
-            while(!clientUDP.parsePacket() && wait_ms > millis()) {}
-            if ((buffer_length = clientUDP.read(buffer, sizeof(buffer)))) {
-                uint8_t dev_id;
-                gateway_protocol_packet_type_t p_type;
-                if (gateway_protocol_packet_decode(
-                    &p_type,
-                    &buffer_length, buffer,
-                    buffer_length, buffer))
-                {
-                    if ( p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND) {
-                        ESP_LOGD(TAG, "PEND SEND received");
-                        print_array_hex(buffer, buffer_length, " : ");
-
-                        uint8_t op, arg_len, args[32];
-
-                        device_control_packet_decode(&op, &arg_len, args, buffer_length, buffer);
-
-                        ESP_LOGD(TAG, "PEND SEND decoded op = %d, arg_len = %d, args : ", op, arg_len);
-                        print_array_hex(args, arg_len, " : ");
-
-                        if (op == GET_DATA) {
-                            // extra data_send
-                            gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
-                            // assign extra data send
-                            sample_flag = 1;
-                        } else if (op == SET_SAMPLING_PERIOD) {
-                            uint32_t samp_period;
-                            if (arg_len == sizeof(samp_period)) {
-                                memcpy(&samp_period, args, sizeof(samp_period));
-                                dev_conf.sample_period = samp_period;
-
-                                timerEnd(timer);
-                                timer = timerBegin(0, 80, true);
-                                timerAttachInterrupt(timer, &onTimer, true);
-                                timerAlarmWrite(timer, dev_conf.sample_period*1000, true);
-                                timerAlarmEnable(timer);
-
-                                ESP_LOGD(TAG, "sampling period set to %lu", dev_conf.sample_period);
-
-                                gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
-                            } else {
-                                ESP_LOGE(TAG, "arg_len error %d != 4", arg_len);
-                                gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
-                            }
-                        } else if (op == DEV_REBOOT) {
-                            ESP_LOGD(TAG, "going to restart...");
-                            gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
-                            periph_module_reset(PERIPH_WIFI_MODULE);
-                            ESP.restart();
-                            // see peripherals reset
-                        } else {
-                            // error unknown op
-                            ESP_LOGE(TAG, "UNKNOWN OPERATION");
-                            gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
-                        }
-                    }
-                }
-            } else {
-                ESP_LOGD(TAG, "NO PEND SEND received");
-            }
+            gateway_protocol_req_pend();
         } else {
             ESP_LOGD(TAG, "NACK %02X", g_stat);
         }
@@ -538,7 +471,6 @@ time_t gateway_protocol_get_time() {
         uint32_t wait_ms = millis() + 1000;
         while(!clientUDP.parsePacket() && wait_ms > millis()) {}
         if ((buf_len = clientUDP.read((unsigned char *)buf, sizeof(buf)))) {
-            uint8_t dev_id;
             gateway_protocol_packet_type_t p_type;
             if (gateway_protocol_packet_decode(
                 &p_type,
@@ -555,7 +487,7 @@ time_t gateway_protocol_get_time() {
 
                     setTime(utc);
                 } else {
-                    ESP_LOGE(TAG, "time content decode error : %02X, %02X, %d", dev_id, p_type, buf_len);
+                    ESP_LOGE(TAG, "time content decode error : %02X, %d", p_type, buf_len);
                 }
             } else {
                 ESP_LOGE(TAG, "time pck decode error");
@@ -680,6 +612,76 @@ void  gateway_protocol_send_data_payload_encode (
     (*payload_length) += sizeof(sensor_data->wis_sensor_data.hh10d);
 }
 
+void gateway_protocol_req_pend() {
+    gateway_protocol_packet_encode(
+        GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ,
+        0, buffer,
+        &buffer_length, buffer);
+
+    send_udp_datagram(GATEWAY_IP_ADDRESS, GATEWAY_PORT, buffer, buffer_length);
+    
+    uint32_t wait_ms = millis() + 1000;
+    while(!clientUDP.parsePacket() && wait_ms > millis()) {}
+    if ((buffer_length = clientUDP.read(buffer, sizeof(buffer)))) {
+        gateway_protocol_packet_type_t p_type;
+        if (gateway_protocol_packet_decode(
+            &p_type,
+            &buffer_length, buffer,
+            buffer_length, buffer))
+        {
+            if (p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND) {
+                ESP_LOGD(TAG, "PEND SEND received");
+                print_array_hex(buffer, buffer_length, " : ");
+
+                uint8_t op, arg_len, args[32];
+
+                device_control_packet_decode(&op, &arg_len, args, buffer_length, buffer);
+
+                ESP_LOGD(TAG, "PEND SEND decoded op = %d, arg_len = %d, args : ", op, arg_len);
+                print_array_hex(args, arg_len, " : ");
+
+                if (op == GET_DATA) {
+                    // extra data_send
+                    gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
+                    // assign extra data send
+                    sample_flag = 1;
+                } else if (op == SET_SAMPLING_PERIOD) {
+                    uint32_t samp_period;
+                    if (arg_len == sizeof(samp_period)) {
+                        memcpy(&samp_period, args, sizeof(samp_period));
+                        dev_conf.sample_period = samp_period;
+
+                        timerEnd(timer);
+                        timer = timerBegin(0, 80, true);
+                        timerAttachInterrupt(timer, &onTimer, true);
+                        timerAlarmWrite(timer, dev_conf.sample_period*1000, true);
+                        timerAlarmEnable(timer);
+
+                        ESP_LOGD(TAG, "sampling period set to %lu", dev_conf.sample_period);
+
+                        gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
+                    } else {
+                        ESP_LOGE(TAG, "arg_len error %d != 4", arg_len);
+                        gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
+                    }
+                } else if (op == DEV_REBOOT) {
+                    ESP_LOGD(TAG, "going to restart...");
+                    gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_ACK);
+                    periph_module_reset(PERIPH_WIFI_MODULE);
+                    ESP.restart();
+                    // see peripherals reset
+                } else {
+                    // error unknown op
+                    ESP_LOGE(TAG, "UNKNOWN OPERATION");
+                    gateway_protocol_send_stat(GATEWAY_PROTOCOL_STAT_NACK);
+                }
+            }
+        }
+    } else {
+        ESP_LOGD(TAG, "NO PEND SEND received");
+    }
+}
+
 gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
     gateway_protocol_stat_t g_stat = GATEWAY_PROTOCOL_STAT_NACK;
     uint8_t data_send_retries = DATA_SEND_RETRIES_MAX;
@@ -705,7 +707,6 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
         uint32_t wait_ms = millis() + 1000;
         while(!clientUDP.parsePacket() && wait_ms > millis()) {}
         if ((buffer_length = clientUDP.read((unsigned char *)buffer, sizeof(buffer)))) {
-            uint8_t dev_id;
             gateway_protocol_packet_type_t p_type;
             ESP_LOGD(TAG, "ack resoponse : ");
             print_array_hex(buffer, buffer_length, " : ");
@@ -722,7 +723,7 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
                     received_ack = 1;
                     ESP_LOGD(TAG, "STAT RECEIVED %02X", g_stat);
                 } else {
-                    ESP_LOGD(TAG, "STAT content error dev_id = %02X, p_type = %02X, buf = %02X", dev_id, p_type, buffer[0]);
+                    ESP_LOGD(TAG, "STAT content error p_type = %02X, buf = %02X", p_type, buffer[0]);
                 }
             } else {
                 ESP_LOGD(TAG, "STAT packet decode error");
@@ -763,10 +764,12 @@ void read_sensors_bus(Stream *stream, sensor_data_t *sensor_data) {
 }
 
 void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
+    #if CORE_DEBUG_LEVEL == ARDUHAL_LOG_LEVEL_DEBUG
     for(uint8_t i = 0; i < array_length-1; i++) {
         Serial.printf("%02X%s", array[i], sep);
     }
     Serial.printf("%02X\r\n", array[array_length-1]);
+    #endif
 }
 
 void set_timestamp(sensor_data_t *sensor_data) {
