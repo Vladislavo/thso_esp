@@ -35,21 +35,24 @@
 
 #define LED_SERIAL                          2
 
-#define WIFI_SSID                           "ISRcomunicaciones34"
-#define WIFI_PASSWORD                       "16818019"
+#define WIFI_SSID                           "iotlab"//"ISRcomunicaciones34"
+#define WIFI_PASSWORD                       "conectate"
 
-#define GATEWAY_IP_ADDRESS                  IPAddress(192,168,0,123)
+#define GATEWAY_IP_ADDRESS                  IPAddress(192,168,4,1)
 #define GATEWAY_PORT                        9043
 
 #define TIME_ZONE                           2 // +2 Madrid
-#define TIME_REQUEST_RETRIES                5
-#define DATA_SEND_RETRIES_MAX               5
+#define TIME_REQUEST_RETRIES                50
+#define DATA_SEND_RETRIES_MAX               50
 
 #define GET_DATA                            0
 #define SET_SAMPLING_PERIOD                 1
 #define DEV_REBOOT                          2
 
-#define DEFAULT_SAMPLE_PERIOD               30000
+#define DEFAULT_SAMPLE_PERIOD               600000 // 10min
+
+#define GATEWAY_APP_KEY                     "lalal"
+#define GATEWAY_DEV_ID                      1
 
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
@@ -142,7 +145,7 @@ void  gateway_protocol_send_data_payload_encode (
     uint8_t *payload_length);
 gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data);
 
-void source_modulation(Stream *stream, sensor_data_t *sensor_data);
+void read_sensors_bus(Stream *stream, sensor_data_t *sensor_data);
 void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep);
 void set_timestamp(sensor_data_t *sensor_data);
 time_t time_sync();
@@ -191,15 +194,25 @@ void setup() {
     WiFi.disconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     WiFi.setSleep(false);
-    while (WiFi.status() != WL_CONNECTED) {
+    uint8_t cnt = 20;
+    while (WiFi.status() != WL_CONNECTED && cnt) {
         delay(500);
         Serial.print(".");
+        cnt--;
     }
+    if (!cnt) {
+        Serial.println("WiFi not connected -> restart!");
+        periph_module_reset(PERIPH_WIFI_MODULE);
+        ESP.restart();
+    }
+
     Serial.println("WiFi connected");
     Serial.println("IP address set: ");
     Serial.println(WiFi.localIP()); //print LAN IP
 
     clientUDP.begin(GATEWAY_PORT);
+
+    gateway_protocol_init((uint8_t *)GATEWAY_APP_KEY, GATEWAY_DEV_ID);
 
     setSyncProvider(gateway_protocol_get_time);
     setSyncInterval(300);
@@ -214,8 +227,8 @@ void setup() {
 void loop() {
     if (sample_flag) {
         read_sensors(&sensor_data.esp_sensor_data);
-        source_modulation(&bus_wis, &sensor_data);
-        source_modulation(&bus_mkr, &sensor_data);
+        read_sensors_bus(&bus_wis, &sensor_data);
+        read_sensors_bus(&bus_mkr, &sensor_data);
 
         set_timestamp(&sensor_data);
 
@@ -263,7 +276,6 @@ void loop() {
         } else if (g_stat == GATEWAY_PROTOCOL_STAT_ACK_PEND) {
             ESP_LOGD(TAG, "ACK_PEND received");
             gateway_protocol_packet_encode(
-                BUS_PROTOCOL_BOARD_ID_ESP,
                 GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ,
                 0, buffer,
                 &buffer_length, buffer);
@@ -276,14 +288,11 @@ void loop() {
                 uint8_t dev_id;
                 gateway_protocol_packet_type_t p_type;
                 if (gateway_protocol_packet_decode(
-                    &dev_id,
                     &p_type,
                     &buffer_length, buffer,
                     buffer_length, buffer))
                 {
-                    if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
-                        p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND)
-                    {
+                    if ( p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND) {
                         ESP_LOGD(TAG, "PEND SEND received");
                         print_array_hex(buffer, buffer_length, " : ");
 
@@ -516,7 +525,6 @@ time_t gateway_protocol_get_time() {
 
     do {
         gateway_protocol_packet_encode(
-                                (uint8_t) BUS_PROTOCOL_BOARD_ID_ESP, 
                                 GATEWAY_PROTOCOL_PACKET_TYPE_TIME_REQ,
                                 0, buf,
                                 &buf_len, buf);
@@ -533,13 +541,11 @@ time_t gateway_protocol_get_time() {
             uint8_t dev_id;
             gateway_protocol_packet_type_t p_type;
             if (gateway_protocol_packet_decode(
-                &dev_id,
                 &p_type,
                 &buf_len, buf,
                 buf_len, buf))
             {
-                if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
-                    p_type == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND &&
+                if (p_type == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND &&
                     buf_len == sizeof(uint32_t)) 
                 {
                     memcpy(&utc, buf, sizeof(uint32_t));
@@ -556,6 +562,7 @@ time_t gateway_protocol_get_time() {
             }
         } else {
             ESP_LOGE(TAG, "no time response");
+            delay(20);
         }
     } while (utc == 0 && retries++ < TIME_REQUEST_RETRIES);
 
@@ -568,7 +575,6 @@ void gateway_protocol_send_stat(gateway_protocol_stat_t stat) {
 
     ESP_LOGD(TAG, "encoding...");
     gateway_protocol_packet_encode (
-        BUS_PROTOCOL_BOARD_ID_ESP,
         GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
         1, (uint8_t *)&stat,
         &buffer_length, buffer);
@@ -683,7 +689,6 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
     
     do {
         gateway_protocol_packet_encode(
-            BUS_PROTOCOL_BOARD_ID_ESP,
             GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND,
             payload_length, payload,
             &buffer_length, buffer);
@@ -706,13 +711,11 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
             print_array_hex(buffer, buffer_length, " : ");
 
             if (gateway_protocol_packet_decode(
-                &dev_id,
                 &p_type,
                 &buffer_length, buffer,
                 buffer_length, buffer)) 
             {
-                if (dev_id == BUS_PROTOCOL_BOARD_ID_ESP &&
-                    p_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
+                if (p_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
                     buffer_length == 1)
                 {
                     g_stat = (gateway_protocol_stat_t) buffer[0];
@@ -726,13 +729,14 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
             }
         } else {
             ESP_LOGD(TAG, "NO STAT RECEIVED");
+            delay(20);
         }
     } while (!received_ack && data_send_retries--);
 
     return g_stat;
 }
 
-void source_modulation(Stream *stream, sensor_data_t *sensor_data) {
+void read_sensors_bus(Stream *stream, sensor_data_t *sensor_data) {
     bus_protocol_data_request_encode(BUS_PROTOCOL_BOARD_ID_ESP, buffer, &buffer_length);
     stream->write(buffer, buffer_length);
 
@@ -766,9 +770,7 @@ void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
 }
 
 void set_timestamp(sensor_data_t *sensor_data) {
-    if (now() < 10000) {
-        gateway_protocol_get_time();
-    }
+    now();
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
