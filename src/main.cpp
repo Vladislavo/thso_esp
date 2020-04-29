@@ -53,6 +53,8 @@
 
 #define DEFAULT_SAMPLE_PERIOD               600000 // 10min
 
+#define TIME_DRIFT_INFO
+
 HardwareSerial bus_wis(2);
 HardwareSerial bus_mkr(1);
 
@@ -772,11 +774,12 @@ void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
 
 void set_timestamp(sensor_data_t *sensor_data) {
     now();
+    adjustTime(TIME_ZONE*3600);
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
     sensor_data->utc = tv.tv_sec;
-    sprintf(sensor_data->timedate, "%d/%d/%d %d:%d:%d", day(), month(), year(), hour()+TIME_ZONE, minute(), second());
+    sprintf(sensor_data->timedate, "%d/%d/%d %d:%d:%d", day(), month(), year(), hour(), minute(), second());
 }
 
 time_t time_sync() {
