@@ -35,12 +35,12 @@
 
 #define LED_SERIAL                          2
 
-#define WIFI_SSID                           "iotlab"//"ISRcomunicaciones34"
-#define WIFI_PASSWORD                       "conectate"
+#define WIFI_SSID                           "ISRcomunicaciones34"
+#define WIFI_PASSWORD                       "16818019"
 
-#define GATEWAY_IP_ADDRESS                  IPAddress(192,168,4,1)
-#define GATEWAY_PORT                        9043
-#define GATEWAY_APP_KEY                     "e6736c46"
+#define GATEWAY_IP_ADDRESS                  IPAddress(51,254,120,244)
+#define GATEWAY_PORT                        54345
+#define GATEWAY_APP_KEY                     "49f4d289"
 #define GATEWAY_DEV_ID                      1
 
 #define TIME_ZONE                           2 // +2 Madrid
@@ -51,7 +51,7 @@
 #define SET_SAMPLING_PERIOD                 1
 #define DEV_REBOOT                          2
 
-#define DEFAULT_SAMPLE_PERIOD               600000 // 10min
+#define DEFAULT_SAMPLE_PERIOD               60000 // 1min
 
 #define TIME_DRIFT_INFO
 
@@ -99,7 +99,6 @@ typedef struct {
 
 typedef struct {
     uint32_t utc;
-    char timedate[32];
     esp_sensor_data_t esp_sensor_data;
     wis_sensor_data_t wis_sensor_data;
     mkr_sensor_data_t mkr_sensor_data;
@@ -149,7 +148,7 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data);
 
 void read_sensors_bus(Stream *stream, sensor_data_t *sensor_data);
 void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep);
-void set_timestamp(sensor_data_t *sensor_data);
+
 time_t time_sync();
 uint8_t send_udp_datagram (
     const IPAddress ip, 
@@ -232,8 +231,7 @@ void loop() {
         read_sensors_bus(&bus_wis, &sensor_data);
         read_sensors_bus(&bus_mkr, &sensor_data);
 
-        set_timestamp(&sensor_data);
-
+        /*
         ESP_LOGD(TAG,   "WIS data: \r\n"
                         "\t%0.2f, %0.2f\r\n"
                         "\t%0.2f, %0.2f\r\n"
@@ -269,7 +267,7 @@ void loop() {
                         sensor_data.esp_sensor_data.hh10d,
                         sensor_data.esp_sensor_data.hih4030,
                         sensor_data.esp_sensor_data.tmp36_0, sensor_data.esp_sensor_data.tmp36_1, sensor_data.esp_sensor_data.tmp36_2);
-
+        */
         
         g_stat = send_sensor_data(&sensor_data);
         
@@ -525,10 +523,6 @@ void  gateway_protocol_send_data_payload_encode (
     memcpy(&payload[*payload_length], &sensor_data->utc, sizeof(sensor_data->utc));
     (*payload_length) += sizeof(sensor_data->utc);
 
-    memcpy(&payload[*payload_length], sensor_data->timedate, sizeof(sensor_data->timedate));
-    // (*payload_length) += sizeof(sensor_data->timedate);
-    (*payload_length) += 32;
-
 
     memcpy(&payload[*payload_length], &sensor_data->esp_sensor_data.dht22_t, sizeof(sensor_data->esp_sensor_data.dht22_t));
     (*payload_length) += sizeof(sensor_data->esp_sensor_data.dht22_t);
@@ -770,16 +764,6 @@ void print_array_hex(uint8_t *array, uint8_t array_length, const char *sep) {
     }
     Serial.printf("%02X\r\n", array[array_length-1]);
     #endif
-}
-
-void set_timestamp(sensor_data_t *sensor_data) {
-    now();
-    adjustTime(TIME_ZONE*3600);
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-
-    sensor_data->utc = tv.tv_sec;
-    sprintf(sensor_data->timedate, "%d/%d/%d %d:%d:%d", day(), month(), year(), hour(), minute(), second());
 }
 
 time_t time_sync() {
