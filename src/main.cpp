@@ -6,9 +6,9 @@
 #include <SHTSensor.h>
 #include <HIHReader.h>
 
-#include <bus_protocol/bus_protocol.h>
-#include <gateway_protocol/gateway_protocol.h>
-#include <device_control.h>
+#include "bus_protocol.h"
+#include "gateway_protocol.h"
+#include "device_control.h"
 
 #include <Adafruit_ADS1015.h>
 
@@ -25,7 +25,6 @@
 #define MKR_SYNC_PIN                        19
 
 #define BUS_PROTOCOL_MAX_PACKET_SIZE        128
-#define GATEWAY_PROTOCOL_MAX_PACKET_SIZE    150
 #define BUS_PROTOCOL_MAX_WAITING_TIME       300
 
 #define WIS_TX_PIN                          17
@@ -35,8 +34,9 @@
 
 #define LED_SERIAL                          2
 
-#define WIFI_SSID                           "ISRcomunicaciones34"
-#define WIFI_PASSWORD                       "16818019"
+#define WIFI_SSID                           "ISRcomunicaciones*34*"
+#define WIFI_PASSWORD                       "52dq4yk9"
+#define SECURE                              1 // encrypted payload
 
 #define GATEWAY_IP_ADDRESS                  IPAddress(51,254,120,244)
 #define GATEWAY_PORT                        54345
@@ -44,14 +44,14 @@
 #define GATEWAY_DEV_ID                      1
 
 #define TIME_ZONE                           2 // +2 Madrid
-#define TIME_REQUEST_RETRIES                50
-#define DATA_SEND_RETRIES_MAX               50
+#define TIME_REQUEST_RETRIES                3
+#define DATA_SEND_RETRIES_MAX               3
 
 #define GET_DATA                            0
 #define SET_SAMPLING_PERIOD                 1
 #define DEV_REBOOT                          2
 
-#define DEFAULT_SAMPLE_PERIOD               60000 // 1min
+#define DEFAULT_SAMPLE_PERIOD               600000 // 10min
 
 #define TIME_DRIFT_INFO
 
@@ -157,12 +157,6 @@ uint8_t send_udp_datagram (
     const uint8_t packet_length);
 
 sensor_data_t sensor_data;
-
-uint8_t buffer[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
-uint8_t buffer_length = 0;
-uint8_t payload[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
-uint8_t payload_length = 0;
-
 dev_conf_t dev_conf;
 
 float t, h;
@@ -171,6 +165,11 @@ int sens;
 int ofs;
 
 gateway_protocol_stat_t g_stat = GATEWAY_PROTOCOL_STAT_NACK;
+
+static const uint8_t SECURE_KEY[GATEWAY_PROTOCOL_SECURE_KEY_SIZE] = { 0x73, 0x60, 0xe4, 0x5e, 
+                                                                      0x09, 0xa0, 0x5e, 0xab, 
+                                                                      0xb1, 0x69, 0xdf, 0x1f, 
+                                                                      0x8c, 0x80, 0x72, 0xd5 };
 
 void setup() {
     Serial.begin(BAUDRATE);
@@ -213,7 +212,7 @@ void setup() {
 
     clientUDP.begin(GATEWAY_PORT);
 
-    gateway_protocol_init((uint8_t *)GATEWAY_APP_KEY, GATEWAY_DEV_ID);
+    gateway_protocol_init((uint8_t *)GATEWAY_APP_KEY, GATEWAY_DEV_ID, SECURE_KEY, SECURE);
 
     setSyncProvider(gateway_protocol_get_time);
     setSyncInterval(300);
@@ -502,8 +501,8 @@ time_t gateway_protocol_get_time() {
 }
 
 void gateway_protocol_send_stat(gateway_protocol_stat_t stat) {
-    // uint8_t pck[10];
-    // uint8_t pck_len = 0;
+    uint8_t buffer[32];
+    uint8_t buffer_length = 0;
 
     gateway_protocol_packet_encode (
         GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
@@ -606,6 +605,11 @@ void  gateway_protocol_send_data_payload_encode (
 }
 
 void gateway_protocol_req_pend() {
+    uint8_t buffer[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
+    uint8_t buffer_length = 0;
+    uint8_t payload[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
+    uint8_t payload_length = 0;
+
     gateway_protocol_packet_encode(
         GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ,
         0, buffer,
@@ -619,16 +623,16 @@ void gateway_protocol_req_pend() {
         gateway_protocol_packet_type_t p_type;
         if (gateway_protocol_packet_decode(
             &p_type,
-            &buffer_length, buffer,
+            &payload_length, payload,
             buffer_length, buffer))
         {
             if (p_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND) {
                 ESP_LOGD(TAG, "PEND SEND received");
-                print_array_hex(buffer, buffer_length, " : ");
+                print_array_hex(payload, payload_length, " : ");
 
                 uint8_t op, arg_len, args[32];
 
-                device_control_packet_decode(&op, &arg_len, args, buffer_length, buffer);
+                device_control_packet_decode(&op, &arg_len, args, payload_length, payload);
 
                 ESP_LOGD(TAG, "PEND SEND decoded op = %d, arg_len = %d, args : ", op, arg_len);
                 print_array_hex(args, arg_len, " : ");
@@ -680,6 +684,10 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
     gateway_protocol_stat_t g_stat = GATEWAY_PROTOCOL_STAT_NACK;
     uint8_t data_send_retries = DATA_SEND_RETRIES_MAX;
     uint8_t received_ack = 0;
+    uint8_t buffer[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
+    uint8_t buffer_length = 0;
+    uint8_t payload[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
+    uint8_t payload_length = 0;
 
     gateway_protocol_send_data_payload_encode(sensor_data, payload, &payload_length);
     
@@ -707,17 +715,17 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
 
             if (gateway_protocol_packet_decode(
                 &p_type,
-                &buffer_length, buffer,
+                &payload_length, payload,
                 buffer_length, buffer)) 
             {
                 if (p_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
-                    buffer_length == 1)
+                    payload_length == 1)
                 {
-                    g_stat = (gateway_protocol_stat_t) buffer[0];
+                    g_stat = (gateway_protocol_stat_t) payload[0];
                     received_ack = 1;
                     ESP_LOGD(TAG, "STAT RECEIVED %02X", g_stat);
                 } else {
-                    ESP_LOGD(TAG, "STAT content error p_type = %02X, buf = %02X", p_type, buffer[0]);
+                    ESP_LOGD(TAG, "STAT content error p_type = %02X, buf = %02X", p_type, payload[0]);
                 }
             } else {
                 ESP_LOGD(TAG, "STAT packet decode error");
@@ -732,6 +740,11 @@ gateway_protocol_stat_t send_sensor_data(const sensor_data_t *sensor_data) {
 }
 
 void read_sensors_bus(Stream *stream, sensor_data_t *sensor_data) {
+    uint8_t buffer[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
+    uint8_t buffer_length = 0;
+    uint8_t payload[GATEWAY_PROTOCOL_MAX_PACKET_SIZE];
+    uint8_t payload_length = 0;
+
     bus_protocol_data_request_encode(BUS_PROTOCOL_BOARD_ID_ESP, buffer, &buffer_length);
     stream->write(buffer, buffer_length);
 
